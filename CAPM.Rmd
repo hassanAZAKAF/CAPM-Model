@@ -1,0 +1,495 @@
+---
+title: "CAPM Model"
+output: html_notebook
+---
+# Introduction 
+In this R notebook, we examine the expected returns on Shell's stock, employing both the Capital Asset Pricing Model (CAPM) and the Arbitrage Pricing Theory (APT). While CAPM offers insights into market-related risk, APT introduces a broader range of systematic factors, including key macroeconomic variables. This multifaceted approach aims to provide a more comprehensive view of Shell's risk-return profile within the dynamic financial landscape.
+
+```{r}
+library(tidyquant)
+library(quantmod)
+library(tidyverse)
+library(ggplot2)
+```
+
+```{r}
+SHEL <- tq_get('SHEL',
+               get = "stock.prices",from = "2010-01-01",to = "2023-01-01")
+FTSE <- tq_get('^FTSE',
+               get = "stock.prices",from = "2010-01-01",to = "2023-01-01")
+```
+
+
+```{r}
+dim(SHEL)
+dim(FTSE)
+```
+```{r}
+sum(is.na(SHEL))
+sum(is.na(FTSE))
+```
+The SHEL data frame is not complete, and FTSE contains 12 NANs.
+### completing the SHEL data frame:
+```{r}
+SHEL <- SHEL[c("date","adjusted")]
+FTSE <- FTSE[c("date","adjusted")]
+```
+
+```{r}
+colnames(SHEL) <- c("date","shell_adjusted")
+colnames(FTSE) <- c("date","FTSE_adjusted")
+```
+
+```{r}
+merged.prices <- left_join(FTSE,SHEL,by="date")
+```
+
+```{r}
+dim(merged.prices)
+```
+```{r}
+sum(is.na(merged.prices$FTSE_adjusted))
+sum(is.na(merged.prices$shell_adjusted))
+```
+Now we do an interpolation to replace the missing values
+```{r}
+merged.prices$FTSE_adjusted <- na.approx(merged.prices$FTSE_adjusted)
+merged.prices$shell_adjusted <- na.approx(merged.prices$shell_adjusted)
+```
+
+```{r}
+merged.prices %>%
+  ggplot(aes(x = date, y = shell_adjusted)) +
+  geom_line() +
+  theme_classic() +
+  labs(x = 'Date',
+       y = "Adjusted Price",
+       title = "Shell stock price chart") +
+  scale_y_continuous(breaks = seq(0,300,10))
+```
+```{r}
+merged.prices %>%
+  ggplot(aes(x = date, y = FTSE_adjusted)) +
+  geom_line() +
+  theme_classic() +
+  labs(x = 'Date',
+       y = "Adjusted Price",
+       title = "FTSE 100 price chart") +
+  scale_y_continuous(breaks = seq(0,300,10))
+```
+### Cheking for stationary
+```{r}
+par(mfrow=c(1,2))
+AutoCorrelation <- acf(merged.prices$shell_adjusted, plot = FALSE)
+plot(AutoCorrelation, main = "SHELL stocks ACF")
+PartialAutoCorrelation <- pacf(merged.prices$shell_adjusted, plot = FALSE)
+plot(PartialAutoCorrelation, main = "SHELL stocks PACF")
+```
+
+```{r}
+par(mfrow=c(1,2))
+AutoCorrelation <- acf(merged.prices$FTSE_adjusted, plot = FALSE)
+plot(AutoCorrelation, main = "FTSE 100 ACF")
+PartialAutoCorrelation <- pacf(merged.prices$FTSE_adjusted, plot = FALSE)
+plot(PartialAutoCorrelation, main = "FTSE 100 PACF")
+```
+
+Certainly, the price time series exhibits non-stationarity. Therefore, it is necessary to conduct a log transformation.
+### Log returns:
+```{r}
+FTSE.logreturns <- diff(log(merged.prices$FTSE_adjusted))
+shell.logreturns <- diff(log(merged.prices$shell_adjusted))
+```
+
+
+```{r}
+par(mfrow=c(1,2))
+AutoCorrelation <- acf(shell.logreturns, plot = FALSE)
+plot(AutoCorrelation, main = "Shell stock log returns ACF")
+PartialAutoCorrelation <- pacf(shell.logreturns, plot = FALSE)
+plot(PartialAutoCorrelation, main = "Shell stock log returns PACF")
+```
+
+```{r}
+par(mfrow=c(1,2))
+AutoCorrelation <- acf(na.omit(FTSE.logreturns), plot = FALSE)
+plot(AutoCorrelation, main = "FTSE log returns ACF")
+PartialAutoCorrelation <- pacf(na.omit(FTSE.logreturns), plot = FALSE)
+plot(PartialAutoCorrelation, main = "FTSE log returns PACF")
+```
+
+```{r}
+ggplot() + geom_line(aes(x = merged.prices$date, y=c(0,FTSE.logreturns))) 
+```
+```{r}
+ggplot() + geom_line(aes(x = merged.prices$date, y=c(0,shell.logreturns))) 
+```
+### Augmented Dickey-Fuller Test
+```{r}
+adf.test(shell.logreturns)
+```
+```{r}
+adf.test(FTSE.logreturns)
+```
+Given the p-value of 0.01, we can confidently conclude that the log prices demonstrate stationarity.
+To establish the CAPM model, it is imperative that we calculate excess returns.
+Interest Rates in UK:
+```{r}
+UK.interest.rate <- getSymbols("INTGSBGBM193N",src="FRED",auto.assign=FALSE)
+UK.interest.rate <- UK.interest.rate["2010-01-01/2023-01-01"]
+```
+
+```{r}
+plot(UK.interest.rate)
+```
+Calculate the log returns of a free risk asset B(t)
+$$
+B_t = (1+\frac{r_t}{22})B_{t-1}
+$$
+Considering the availability of monthly interest rates and an average of 22 business days, the calculation for log returns is as follows:
+$$
+Rf_t = log(\frac{B_t}{B_{t-1}}) = log(1+\frac{r_t}{22})
+$$
+```{r}
+head(UK.interest.rate)
+```
+
+```{r}
+returns <- data.frame(date=merged.prices$date)
+```
+
+```{r}
+n <- length(returns$date)
+for(i in 1:n){
+  Month <- format(returns$date[i],"%m")
+  Year <- format(returns$date[i],"%Y")
+  Day <- 01
+  InterestRate <- UK.interest.rate[as.Date(paste(Year, Month, "01", sep = "-"))]
+  returns$risk.free[i] <- log(1+InterestRate/22)
+}
+```
+
+
+```{r}
+head(returns)
+```
+```{r}
+plot(returns$risk.free,type="l",ylab="log returns",main="Log returns of risk free asset")
+```
+```{r}
+FTSE.logreturns <- FTSE.logreturns - returns$risk.free[1:(n-1)]
+shell.logreturns <- shell.logreturns - returns$risk.free[1:(n-1)]
+```
+Scatter plot of FTSE and Shell log returns:
+
+```{r}
+ggplot() + geom_point(aes(x = FTSE.logreturns,y = shell.logreturns)) + labs(x = "FTSE  100",y = "SHELL",title = "FTSE  100 vs SHELL stock") 
+```
+### Fitting the CAPM model:
+```{r}
+CAPM.model <- lm(shell.logreturns ~ FTSE.logreturns) 
+```
+
+```{r}
+CAPM.model
+```
+```{r}
+summary(CAPM.model)
+```
+
+We note that the R-squared value stands at 0.8935, indicating a high level of explanatory power.
+$$
+\text{The t-statistic for the intercept } 	\alpha_{Shell} \text{ is not significant which mean we failed to reject the null}\\ \text{ hypothesis which is : } H_0 : \alpha_{Shell} = 0 \text{, However the coefficient } \beta_{Shell} \text{ is significant}
+$$
+```{r}
+layout(matrix(c(1,2,3,4),2,2))
+plot(CAPM.model)
+```
+We observe that the CAPM model does not exhibit heteroscedasticity.
+```{r}
+ggplot() + geom_point(aes(x = FTSE.logreturns,y = shell.logreturns))+ geom_line(aes(x = FTSE.logreturns, y = predict(CAPM.model,newdata = as.data.frame(FTSE.logreturns)),colour="red")) + labs(x = "FTSE 100",
+       y = "Shell",
+       title = "FTSE 100 500 vs Shell stock") 
+```
+
+### Testing the Linearity Assumption
+```{r}
+library(car)
+```
+
+```{r}
+crPlots(CAPM.model)
+```
+### Testing the Homoscedasticity Assumption
+```{r}
+ncvTest(CAPM.model)
+```
+p < 0.05 which rejects the Homoscedasticity assumption
+### Testing the Independence Assumption
+```{r}
+durbinWatsonTest(CAPM.model)
+```
+The significance level, with p < 0.05, suggests that the model's errors are not exhibiting autocorrelation.
+
+### Outliers Analysis
+```{r}
+qqPlot(CAPM.model, id.method="identify",
+         simulate=TRUE, main="Q-Q Plot")
+
+```
+```{r}
+outlierTest(CAPM.model)
+```
+The statistical test confirms that the values : are indeed outliers
+
+```{r}
+model.influnce <- influence.measures(CAPM.model)
+```
+```{r}
+head(model.influnce$infmat)
+```
+```{r}
+model.hat <- hatvalues(CAPM.model)
+id.model.hat <- which(model.hat > (2*(4+1)/nrow(FTSE.logreturns)))
+```
+
+```{r}
+table(model.influnce$is.inf[,"hat"])
+```
+
+```{r}
+par(mfrow=c(1,2))
+plot(CAPM.model, which=c(4:5))
+```
+The three point 2581, 2584 and 2743 affects negatively the regression model.
+```{r}
+Bizzard.point <- c(2581, 2584, 2743)
+merged.prices$date[Bizzard.point]
+```
+```{r}
+merged.prices$adjusted[merged.prices$date %in% merged.prices$date[Bizzard.point]]
+```
+```{r}
+ggplot() + geom_line(aes(merged.prices$date,merged.prices$FTSE_adjusted))+geom_point(aes(merged.prices$date[Bizzard.point],merged.prices$FTSE_adjusted[merged.prices$date %in% merged.prices$date[Bizzard.point]],colour = "red",size=3))
+``` 
+Those values correspond to an unexpected changes in the market in  2020 (COVID 19 crisis)
+```{r}
+plot(CAPM.model,which = 6)
+```
+```{r}
+influencePlot(CAPM.model)
+```
+```{r}
+Influencial.point <- c(79,2743,2578,2580,2584)
+merged.prices$date[Influencial.point]
+```
+
+
+```{r}
+plot(FTSE.logreturns, shell.logreturns)
+abline(h=0,v=0)
+abline(CAPM.model, col=3, lwd=3)
+index.inf.hat<-which(model.influnce$is.inf[,"hat"]==TRUE)
+points(FTSE.logreturns[index.inf.hat], shell.logreturns[index.inf.hat],col=2, pch="o")
+index.inf.cook.d<-which(model.influnce$is.inf[,"cook.d"]==TRUE)
+points(FTSE.logreturns[index.inf.cook.d], shell.logreturns[index.inf.cook.d],col=4, pch="X", cex=2.)
+```
+```{r}
+highleverage <- function(fit) {
+ p <- length(coefficients(fit))
+ n <- length(fitted(fit))
+ ratio <-p/n
+ plot(hatvalues(fit), main="Index Plot of Ratio",type='l')
+ abline(h=c(2,3)*ratio, col="red", lty=2)
+ identify(1:n, hatvalues(fit), names(hatvalues(fit)))
+}
+highleverage(CAPM.model)
+```
+The index plot of the ratio indicates notable instances of high leverage during specific periods, namely in 2010, coinciding with the European Natural Gas Crisis, and subsequently in 2020 amid the COVID-19 pandemic, as well as in 2021 during the War in Ukraine. These temporal correlations highlight the influence of these significant geopolitical and global events on our leverage profile.
+
+### Arbitrage Pricing Theory (APT) model : Adding macro economic factors
+We add oil prices and Currency Exchange Rates.
+Crude Oil Prices: Brent - Europe:
+```{r}
+oil.price <- getSymbols("DCOILBRENTEU",src="FRED",auto.assign=FALSE)
+oil.price <- oil.price["2010-01-01/2023-01-01"]
+```
+
+
+```{r}
+plot(oil.price)
+```
+```{r}
+oil_price <- as.vector(oil.price$DCOILBRENTEU)
+date <- c(index(oil.price))
+
+oil <- data.frame(oil_price, date)
+```
+
+```{r}
+sum(is.na(oil))
+```
+```{r}
+head(oil)
+```
+
+```{r}
+merged.prices <- left_join(merged.prices,oil,by="date")
+```
+```{r}
+head(merged.prices)
+```
+```{r}
+merged.prices$oil_price <- na.approx(merged.prices$oil_price)
+```
+
+U.S. Dollars to U.K. Pound Sterling Spot Exchange Rate:
+```{r}
+US.UK.exchange <- getSymbols("DEXUSUK",src="FRED",auto.assign=FALSE)
+US.UK.exchange <- US.UK.exchange["2010-01-01/2023-01-01"]
+```
+
+```{r}
+plot(US.UK.exchange)
+```
+```{r}
+US.UK.Exchange <- as.vector(US.UK.exchange$DEXUSUK)
+date <- c(index(US.UK.exchange))
+
+US.UK <- data.frame(US.UK.Exchange, date)
+```
+
+```{r}
+merged.prices <- left_join(merged.prices,US.UK,by="date")
+```
+
+```{r}
+merged.prices$US.UK.Exchange <- na.approx(merged.prices$US.UK.Exchange)
+```
+
+
+```{r}
+head(merged.prices)
+```
+
+```{r}
+merged.returns <- log(merged.prices[c("FTSE_adjusted","shell_adjusted","oil_price","US.UK.Exchange")])
+
+merged.logreturns <- data.frame(FTSE.logreturns = na.omit(FTSE.logreturns),
+                                shell.logreturns = 
+na.omit(shell.logreturns),
+                                oil.logreturns = 
+na.omit(diff(merged.returns$oil_price)),
+                                exchange.logreturns = 
+na.omit(diff(merged.returns$US.UK.Exchange))
+                                )
+```
+
+```{r}
+head(merged.logreturns)
+```
+```{r}
+layout(matrix(c(1,2,3,4),2,2))
+plot(merged.logreturns$FTSE.logreturns,type='l',ylab='FTSE 100')
+plot(merged.logreturns$shell.logreturns,type='l',ylab='SHELL')
+plot(merged.logreturns$oil.logreturns,type='l',ylab="Oil")
+plot(merged.logreturns$exchange.logreturns,type='l',ylab="US/UK Exchange")
+```
+
+```{r}
+APT.model <- lm(formula=shell.logreturns~FTSE.logreturns+oil.logreturns+exchange.logreturns,data=merged.logreturns)
+```
+```{r}
+summary(APT.model)
+```
+We observe that the R-squared value has increased to 0.9057, compared to 0.8935 for the CAPM model.
+```{r}
+layout(matrix(c(1,2,3,4),2,2))
+plot(APT.model)
+```
+
+```{r}
+par(mfrow=c(1,2))
+plot(APT.model, which=c(4:5))
+```
+```{r}
+APT.residuals <- resid(APT.model)
+qqnorm(APT.residuals, pch = 1, frame = FALSE)
+qqline(APT.residuals, col = "steelblue", lwd = 2)
+```
+```{r}
+library(tseries)
+```
+
+```{r}
+jarque.bera.test(APT.residuals)
+```
+The residuals of the APT model aren't normal.
+```{r}
+adf.test(APT.residuals)
+```
+```{r}
+plot(APT.residuals,type="l")
+```
+
+The p-value is 0.01 which indicates that the residuals series are stationary.
+
+### Testing the Linearity Assumption
+```{r}
+library(car)
+```
+
+
+```{r}
+crPlots(APT.model)
+```
+### Testing the Homoscedasticity Assumption
+```{r}
+ncvTest(APT.model)
+```
+p < 0.05 which rejects the Homoscedasticity assumption
+### Testing the Independence Assumption
+```{r}
+durbinWatsonTest(APT.model)
+```
+The significance level, with p < 0.05, suggests that the model's errors are not exhibiting autocorrelation.
+
+### Outliers Analysis
+```{r}
+qqPlot(APT.model, id.method="identify",
+         simulate=TRUE, main="Q-Q Plot")
+
+```
+```{r}
+outlierTest(APT.model)
+```
+The statistical test confirms that the values : are indeed outliers
+
+```{r}
+model.influnce <- influence.measures(APT.model)
+```
+```{r}
+head(model.influnce$infmat)
+```
+```{r}
+model.hat <- hatvalues(APT.model)
+id.model.hat <- which(model.hat > (2*(4+1)/nrow(FTSE.logreturns)))
+```
+
+```{r}
+table(model.influnce$is.inf[,"hat"])
+```
+
+```{r}
+par(mfrow=c(1,2))
+plot(APT.model, which=c(4:5))
+```
+The three point 2602, 2580 and 2573 affects negatively the regression model.
+```{r}
+Bizzard.point <- c(2602, 2580, 2573)
+merged.prices$date[Bizzard.point]
+```
+Again the influential points correspond to the COVID-19 crisis.
+
+# Conclusion 
+Our analysis indicates that the APT model outperforms CAPM with an impressive R-squared of 0.9057. Importantly, both models exhibit uncorrelated residuals and no heteroskedasticity, affirming their robustness in capturing asset return variations despite non-normal residual distributions.
